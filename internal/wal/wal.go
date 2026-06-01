@@ -3,6 +3,7 @@ package wal
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"os"
@@ -11,6 +12,8 @@ import (
 type WAL struct {
 	file *os.File
 }
+
+const maxRecordsSize = 64 * 1024 * 1024 // 64MB is the limit
 
 type Record struct {
 	Key   string
@@ -51,11 +54,11 @@ func (w *WAL) Write(key string, value []byte) error {
 	return w.file.Sync()
 }
 
-func OpenForRead(path string) (*os.File, error) {
+func OpenWALForRead(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY, 0644)
 }
 
-func RecordWAl(file *os.File) ([]Record, error) {
+func ReadRecords(file *os.File) ([]Record, error) {
 	var records []Record
 	header := make([]byte, 12)
 	for {
@@ -70,7 +73,12 @@ func RecordWAl(file *os.File) ([]Record, error) {
 		keySize := binary.BigEndian.Uint32(header[4:8])
 		valueSize := binary.BigEndian.Uint32(header[8:12])
 
+		if uint64(keySize)+uint64(valueSize) > maxRecordsSize {
+			return records, fmt.Errorf("record size exceeds limit")
+		}
+
 		dataBuf := make([]byte, keySize+valueSize)
+
 		if _, err := io.ReadFull(file, dataBuf); err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
@@ -82,11 +90,10 @@ func RecordWAl(file *os.File) ([]Record, error) {
 		hashser.Write(dataBuf)
 		actualChecksum := hashser.Sum32()
 		if actualChecksum != expectedChecksum {
-			continue
+			return records, fmt.Errorf("corruption detected at record %d", len(records))
 		}
 		key := string(dataBuf[0:keySize])
-		value := make([]byte, valueSize)
-		copy(value, dataBuf[keySize:])
+		value := dataBuf[keySize:]
 
 		records = append(records, Record{Key: key, Value: value})
 	}

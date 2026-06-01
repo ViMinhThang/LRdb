@@ -40,13 +40,13 @@ func TestWAL_WriteAndRead(t *testing.T) {
 	}
 
 	// 2. Open for read and verify records
-	file, err := OpenForRead(walPath)
+	file, err := OpenWALForRead(walPath)
 	if err != nil {
 		t.Fatalf("Failed to open WAL for read: %v", err)
 	}
 	defer file.Close()
 
-	readRecords, err := RecordWAl(file)
+	readRecords, err := ReadRecords(file)
 	if err != nil {
 		t.Fatalf("Failed to read WAL records: %v", err)
 	}
@@ -95,13 +95,13 @@ func TestWAL_AppendAndRead(t *testing.T) {
 	w2.Close()
 
 	// Read and verify both
-	file, err := OpenForRead(walPath)
+	file, err := OpenWALForRead(walPath)
 	if err != nil {
 		t.Fatalf("Failed to open WAL for read: %v", err)
 	}
 	defer file.Close()
 
-	records, err := RecordWAl(file)
+	records, err := ReadRecords(file)
 	if err != nil {
 		t.Fatalf("Failed to read WAL: %v", err)
 	}
@@ -133,13 +133,13 @@ func TestWAL_EmptyWAL(t *testing.T) {
 	}
 	f.Close()
 
-	file, err := OpenForRead(walPath)
+	file, err := OpenWALForRead(walPath)
 	if err != nil {
 		t.Fatalf("Failed to open WAL for read: %v", err)
 	}
 	defer file.Close()
 
-	records, err := RecordWAl(file)
+	records, err := ReadRecords(file)
 	if err != nil {
 		t.Fatalf("Failed to read empty WAL: %v", err)
 	}
@@ -188,24 +188,23 @@ func TestWAL_CorruptionAndTruncation(t *testing.T) {
 		t.Fatalf("Failed to write corrupted WAL: %v", err)
 	}
 
-	// Verify that the corrupted record is skipped (RecordWAl handles checksum mismatches by skipping)
-	file, err := OpenForRead(corruptedPath)
+	// Verify that the corrupted record returns an error, but successfully returns the first healthy record
+	file, err := OpenWALForRead(corruptedPath)
 	if err != nil {
 		t.Fatalf("Failed to open bad WAL: %v", err)
 	}
 	defer file.Close()
 
-	records, err := RecordWAl(file)
-	if err != nil {
-		t.Fatalf("Failed to parse corrupted WAL: %v", err)
+	records, err := ReadRecords(file)
+	if err == nil {
+		t.Fatalf("Expected corruption error, but got nil error")
 	}
 
-	// Since record 2 has a bad checksum, it should be skipped, leaving record 1 and record 3.
-	// Wait, because we modified the byte at offset 35, let's verify if record 2 was actually skipped.
-	// We want to make sure it handles skips robustly or skips trailing part.
-	t.Logf("Parsed %d records from corrupted WAL:", len(records))
-	for _, r := range records {
-		t.Logf("  Key: %s", r.Key)
+	// Since record 2 has a bad checksum, we should get exactly 1 record ("key1") returned alongside the error.
+	if len(records) != 1 {
+		t.Errorf("Expected 1 record before corruption, got %d", len(records))
+	} else if records[0].Key != "key1" {
+		t.Errorf("Expected key1, got %q", records[0].Key)
 	}
 
 	// Let's test truncation (cut the file off inside record 3)
@@ -216,13 +215,13 @@ func TestWAL_CorruptionAndTruncation(t *testing.T) {
 		t.Fatalf("Failed to write truncated WAL: %v", err)
 	}
 
-	fileTrunc, err := OpenForRead(truncatedPath)
+	fileTrunc, err := OpenWALForRead(truncatedPath)
 	if err != nil {
 		t.Fatalf("Failed to open truncated WAL: %v", err)
 	}
 	defer fileTrunc.Close()
 
-	recordsTrunc, err := RecordWAl(fileTrunc)
+	recordsTrunc, err := ReadRecords(fileTrunc)
 	if err != nil {
 		t.Fatalf("Failed to parse truncated WAL: %v", err)
 	}
