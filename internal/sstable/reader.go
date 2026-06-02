@@ -24,7 +24,6 @@ func (reader *SSTableReader) Close() error {
 	return reader.file.Close()
 }
 
-
 func OpenSSTableReader(filePath string) (*SSTableReader, error) {
 	if _, err := os.Stat(filePath); err != nil {
 		return nil, err

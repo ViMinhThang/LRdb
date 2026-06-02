@@ -5,6 +5,21 @@ import (
 	"os"
 )
 
+type IndexEntry struct {
+	LastKey string
+	Offset  uint64
+	Size    uint64
+}
+
+type SSTableBuilder struct {
+	file              *os.File
+	filePath          string
+	currentBlockSize  uint64
+	currentFileOffset uint64
+	indexManifest     []IndexEntry
+	blockSizeLimit    uint64
+}
+
 func NewSSTableBuilder(filePath string, blockSizeLimit uint64) (*SSTableBuilder, error) {
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -16,7 +31,6 @@ func NewSSTableBuilder(filePath string, blockSizeLimit uint64) (*SSTableBuilder,
 		blockSizeLimit: blockSizeLimit,
 	}, nil
 }
-
 
 func (b *SSTableBuilder) Append(key string, value []byte) error {
 	keybuf := []byte(key)

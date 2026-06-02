@@ -45,7 +45,7 @@ func (sl *SkipList) Put(key string, value []byte) {
 	curr := sl.findLessThan(key, update)
 
 	// dịch chuyển sang phải ở tầng 0 vì tầng 0 chứa tất cả các node nên cần xuống tầng 0
-	// để kiểm tra xem có phải update node hay không
+	// để kiểm tra xem có node này không ? nếu có nghĩa là update node
 	curr = curr.forward[0]
 	// nếu là update
 	if curr != nil && curr.key == key {
@@ -58,7 +58,6 @@ func (sl *SkipList) Put(key string, value []byte) {
 	newLevel := sl.randomLevel()
 	// nếu là level cao hơn hiện tại
 	// bắt đầu từ tầng cao nhất hiện tại
-	//
 	if newLevel > sl.level {
 		for i := sl.level; i < newLevel; i++ {
 			update[i] = sl.head
@@ -99,4 +98,34 @@ func (sl *SkipList) findLessThan(key string, update []*Node) *Node {
 		}
 	}
 	return curr
+}
+
+func (sl *SkipList) Size() int64 {
+	return sl.size
+}
+
+type Iterator struct {
+	current *Node
+}
+
+func (sl *SkipList) NewIterator() *Iterator {
+	return &Iterator{current: sl.head.forward[0]}
+}
+
+func (it *Iterator) Next() bool {
+	return it.current != nil
+}
+
+func (it *Iterator) Key() string {
+	return it.current.key
+}
+
+func (it *Iterator) Value() []byte {
+	return it.current.value
+}
+
+func (it *Iterator) Advance() {
+	if it.current != nil {
+		it.current = it.current.forward[0]
+	}
 }
