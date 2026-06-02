@@ -2,15 +2,19 @@ package engine
 
 import (
 	"os"
+	"sync"
 
 	"github.com/ViMinhThang/LRdb/internal/memtable"
 	"github.com/ViMinhThang/LRdb/internal/wal"
 )
 
 type DB struct {
-	memTable *memtable.SkipList
-	wal      *wal.WAL
-	walPath  string
+	memTable          *memtable.SkipList
+	immutableMemtable *memtable.SkipList
+	wal               *wal.WAL
+	walPath           string
+	nextSSTableID     uint64
+	mu                sync.RWMutex
 }
 
 func OpenDB(walPath string, maxLevel int) (*DB, error) {
@@ -48,7 +52,18 @@ func (db *DB) Put(Key string, value []byte) error {
 	return nil
 }
 func (db *DB) Get(key string) ([]byte, bool) {
-	return db.memTable.Get(key)
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+
+	if value, found := db.memTable.Get(key); found {
+		return value, true
+	}
+	if db.immutableMemtable != nil {
+		if value, found := db.immutableMemtable.Get(key); found {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func (db *DB) Close() error {
