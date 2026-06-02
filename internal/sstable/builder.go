@@ -1,6 +1,8 @@
 package sstable
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+)
 
 func (b *SSTableBuilder) Append(key string, value []byte) error {
 	keybuf := []byte(key)
@@ -43,4 +45,35 @@ func (b *SSTableBuilder) Append(key string, value []byte) error {
 		b.currentBlockSize = 0
 	}
 	return nil
+}
+func (b *SSTableBuilder) Finish() error {
+	indexOffset := b.currentFileOffset
+
+	for _, entry := range b.indexManifest {
+		keybuf := []byte(entry.LastKey)
+		keySize := uint32(len(keybuf))
+
+		buf := make([]byte, 20)
+		binary.BigEndian.PutUint64(buf[0:8], entry.Offset)
+		binary.BigEndian.PutUint64(buf[8:16], entry.Size)
+		binary.BigEndian.PutUint32(buf[16:20], keySize)
+
+		if _, err := b.file.Write(buf); err != nil {
+			return err
+		}
+
+		if _, err := b.file.Write(keybuf); err != nil {
+			return err
+		}
+		b.currentFileOffset += uint64(20 + keySize)
+	}
+	indexSize := b.currentFileOffset - indexOffset
+
+	footer := make([]byte, 16)
+	binary.BigEndian.PutUint64(footer[0:8], indexOffset)
+	binary.BigEndian.PutUint64(footer[8:16], indexSize)
+	if _, err := b.file.Write(footer); err != nil {
+		return err
+	}
+	return b.file.Close()
 }
