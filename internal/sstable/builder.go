@@ -2,7 +2,21 @@ package sstable
 
 import (
 	"encoding/binary"
+	"os"
 )
+
+func NewSSTableBuilder(filePath string, blockSizeLimit uint64) (*SSTableBuilder, error) {
+	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return &SSTableBuilder{
+		file:           file,
+		filePath:       filePath,
+		blockSizeLimit: blockSizeLimit,
+	}, nil
+}
+
 
 func (b *SSTableBuilder) Append(key string, value []byte) error {
 	keybuf := []byte(key)
