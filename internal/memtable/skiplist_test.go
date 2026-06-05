@@ -47,6 +47,25 @@ func TestSkipList_PutDuplicateUpdate(t *testing.T) {
 	}
 }
 
+func TestSkipList_DeleteTombstone(t *testing.T) {
+	sl := NewSkipList(8)
+
+	sl.Put("key1", []byte("value1"))
+	sl.Delete("key1")
+
+	if val, ok := sl.Get("key1"); ok || val != nil {
+		t.Fatalf("Expected deleted key to be hidden, got %s", val)
+	}
+
+	entry, ok := sl.GetEntry("key1")
+	if !ok {
+		t.Fatal("Expected tombstone entry to exist")
+	}
+	if !entry.Deleted || entry.Key != "key1" || len(entry.Value) != 0 {
+		t.Fatalf("Expected tombstone entry, got %+v", entry)
+	}
+}
+
 func TestSkipList_Ordering(t *testing.T) {
 	sl := NewSkipList(8)
 

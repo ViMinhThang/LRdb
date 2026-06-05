@@ -14,10 +14,12 @@ type WAL struct {
 }
 
 const maxRecordsSize = 64 * 1024 * 1024 // 64MB is the limit
+const tombstoneMask uint32 = 1 << 31
 
 type Record struct {
-	Key   string
-	Value []byte
+	Key     string
+	Value   []byte
+	Deleted bool
 }
 
 func NewWAL(path string) (*WAL, error) {
@@ -29,15 +31,30 @@ func NewWAL(path string) (*WAL, error) {
 }
 
 func (w *WAL) Write(key string, value []byte) error {
+	return w.writeRecord(key, value, false)
+}
+
+func (w *WAL) WriteDelete(key string) error {
+	return w.writeRecord(key, nil, true)
+}
+
+func (w *WAL) writeRecord(key string, value []byte, deleted bool) error {
 	keyBuf := []byte(key)
 	keySize := len(keyBuf)
 	valueSize := len(value)
+	if valueSize > int(tombstoneMask-1) {
+		return fmt.Errorf("value size exceeds limit")
+	}
 
 	recordSize := 12 + keySize + valueSize
 	record := make([]byte, recordSize)
 
 	binary.BigEndian.PutUint32(record[4:8], uint32(keySize))
-	binary.BigEndian.PutUint32(record[8:12], uint32(valueSize))
+	encodedValueSize := uint32(valueSize)
+	if deleted {
+		encodedValueSize |= tombstoneMask
+	}
+	binary.BigEndian.PutUint32(record[8:12], encodedValueSize)
 
 	copy(record[12:12+keySize], keyBuf)
 	copy(record[12+keySize:], value)
@@ -71,7 +88,9 @@ func ReadRecords(file *os.File) ([]Record, error) {
 		}
 		expectedChecksum := binary.BigEndian.Uint32(header[0:4])
 		keySize := binary.BigEndian.Uint32(header[4:8])
-		valueSize := binary.BigEndian.Uint32(header[8:12])
+		encodedValueSize := binary.BigEndian.Uint32(header[8:12])
+		deleted := encodedValueSize&tombstoneMask != 0
+		valueSize := encodedValueSize &^ tombstoneMask
 
 		if uint64(keySize)+uint64(valueSize) > maxRecordsSize {
 			return records, fmt.Errorf("record size exceeds limit")
@@ -95,7 +114,7 @@ func ReadRecords(file *os.File) ([]Record, error) {
 		key := string(dataBuf[0:keySize])
 		value := dataBuf[keySize:]
 
-		records = append(records, Record{Key: key, Value: value})
+		records = append(records, Record{Key: key, Value: value, Deleted: deleted})
 	}
 	return records, nil
 }

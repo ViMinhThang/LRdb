@@ -2,8 +2,17 @@ package sstable
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 )
+
+const tombstoneMask uint32 = 1 << 31
+
+type Entry struct {
+	Key     string
+	Value   []byte
+	Deleted bool
+}
 
 type IndexEntry struct {
 	LastKey string
@@ -33,9 +42,21 @@ func NewSSTableBuilder(filePath string, blockSizeLimit uint64) (*SSTableBuilder,
 }
 
 func (b *SSTableBuilder) Append(key string, value []byte) error {
-	keybuf := []byte(key)
+	return b.AppendEntry(Entry{Key: key, Value: value})
+}
+
+func (b *SSTableBuilder) AppendTombstone(key string) error {
+	return b.AppendEntry(Entry{Key: key, Deleted: true})
+}
+
+func (b *SSTableBuilder) AppendEntry(entry Entry) error {
+	if len(entry.Value) > int(tombstoneMask-1) {
+		return fmt.Errorf("value size exceeds limit")
+	}
+
+	keybuf := []byte(entry.Key)
 	keySize := uint32(len(keybuf))
-	valueSize := uint32(len(value))
+	valueSize := uint32(len(entry.Value))
 
 	if b.currentBlockSize == 0 {
 		newEntry := IndexEntry{
@@ -48,7 +69,11 @@ func (b *SSTableBuilder) Append(key string, value []byte) error {
 
 	header := make([]byte, 8)
 	binary.BigEndian.PutUint32(header[0:4], keySize)
-	binary.BigEndian.PutUint32(header[4:8], valueSize)
+	encodedValueSize := valueSize
+	if entry.Deleted {
+		encodedValueSize |= tombstoneMask
+	}
+	binary.BigEndian.PutUint32(header[4:8], encodedValueSize)
 
 	if _, err := b.file.Write(header); err != nil {
 		return err
@@ -58,12 +83,12 @@ func (b *SSTableBuilder) Append(key string, value []byte) error {
 		return err
 	}
 
-	if _, err := b.file.Write(value); err != nil {
+	if _, err := b.file.Write(entry.Value); err != nil {
 		return err
 	}
 
 	currentIndex := len(b.indexManifest) - 1
-	b.indexManifest[currentIndex].LastKey = key
+	b.indexManifest[currentIndex].LastKey = entry.Key
 	b.indexManifest[currentIndex].Size += kvSize
 
 	b.currentFileOffset += kvSize

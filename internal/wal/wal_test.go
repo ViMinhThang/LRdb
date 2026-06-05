@@ -25,8 +25,8 @@ func TestWAL_WriteAndRead(t *testing.T) {
 	recordsToWrite := []Record{
 		{Key: "key-1", Value: []byte("value-1")},
 		{Key: "key-2", Value: []byte("value-2")},
-		{Key: "key-3", Value: []byte("")}, // empty value
-		{Key: "", Value: []byte("value-4")},  // empty key
+		{Key: "key-3", Value: []byte("")},   // empty value
+		{Key: "", Value: []byte("value-4")}, // empty key
 	}
 
 	for _, r := range recordsToWrite {
@@ -114,6 +114,56 @@ func TestWAL_AppendAndRead(t *testing.T) {
 	}
 	if records[1].Key != "second" || !bytes.Equal(records[1].Value, []byte("data2")) {
 		t.Errorf("Unexpected second record: %+v", records[1])
+	}
+}
+
+func TestWAL_TombstoneAndEmptyValue(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "wal_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	walPath := filepath.Join(tempDir, "test.wal")
+
+	w, err := NewWAL(walPath)
+	if err != nil {
+		t.Fatalf("Failed to create WAL: %v", err)
+	}
+	if err := w.Write("empty", []byte{}); err != nil {
+		t.Fatalf("Failed to write empty value: %v", err)
+	}
+	if err := w.WriteDelete("gone"); err != nil {
+		t.Fatalf("Failed to write tombstone: %v", err)
+	}
+	if err := w.Write("live", []byte("value")); err != nil {
+		t.Fatalf("Failed to write live value: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Failed to close WAL: %v", err)
+	}
+
+	file, err := OpenWALForRead(walPath)
+	if err != nil {
+		t.Fatalf("Failed to open WAL for read: %v", err)
+	}
+	defer file.Close()
+
+	records, err := ReadRecords(file)
+	if err != nil {
+		t.Fatalf("Failed to read WAL records: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("Expected 3 records, got %d", len(records))
+	}
+	if records[0].Deleted || records[0].Key != "empty" || !bytes.Equal(records[0].Value, []byte{}) {
+		t.Fatalf("Expected live empty value, got %+v", records[0])
+	}
+	if !records[1].Deleted || records[1].Key != "gone" || len(records[1].Value) != 0 {
+		t.Fatalf("Expected tombstone, got %+v", records[1])
+	}
+	if records[2].Deleted || records[2].Key != "live" || !bytes.Equal(records[2].Value, []byte("value")) {
+		t.Fatalf("Expected live value, got %+v", records[2])
 	}
 }
 

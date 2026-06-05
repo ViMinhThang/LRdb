@@ -5,7 +5,14 @@ import "math/rand"
 type Node struct {
 	key     string
 	value   []byte
+	deleted bool
 	forward []*Node
+}
+
+type Entry struct {
+	Key     string
+	Value   []byte
+	Deleted bool
 }
 
 type SkipList struct {
@@ -40,17 +47,24 @@ func (sl *SkipList) randomLevel() int {
 }
 
 func (sl *SkipList) Put(key string, value []byte) {
+	sl.putEntry(key, value, false)
+}
+
+func (sl *SkipList) Delete(key string) {
+	sl.putEntry(key, nil, true)
+}
+
+func (sl *SkipList) putEntry(key string, value []byte, deleted bool) {
 	update := make([]*Node, sl.maxLevel)
 
 	curr := sl.findLessThan(key, update)
 
-	// dịch chuyển sang phải ở tầng 0 vì tầng 0 chứa tất cả các node nên cần xuống tầng 0
-	// để kiểm tra xem có node này không ? nếu có nghĩa là update node
 	curr = curr.forward[0]
 	// nếu là update
 	if curr != nil && curr.key == key {
 		oldSize := int64(len(curr.value))
 		curr.value = value
+		curr.deleted = deleted
 		sl.size += int64(len(value)) - oldSize
 		return
 	}
@@ -67,6 +81,7 @@ func (sl *SkipList) Put(key string, value []byte) {
 	newNode := &Node{
 		key:     key,
 		value:   value,
+		deleted: deleted,
 		forward: make([]*Node, newLevel),
 	}
 	for i := 0; i < newLevel; i++ {
@@ -77,13 +92,21 @@ func (sl *SkipList) Put(key string, value []byte) {
 }
 
 func (sl *SkipList) Get(key string) ([]byte, bool) {
+	entry, found := sl.GetEntry(key)
+	if !found || entry.Deleted {
+		return nil, false
+	}
+	return entry.Value, true
+}
+
+func (sl *SkipList) GetEntry(key string) (Entry, bool) {
 	curr := sl.findLessThan(key, nil)
 	curr = curr.forward[0]
 
 	if curr != nil && curr.key == key {
-		return curr.value, true
+		return Entry{Key: curr.key, Value: curr.value, Deleted: curr.deleted}, true
 	}
-	return nil, false
+	return Entry{}, false
 }
 
 func (sl *SkipList) findLessThan(key string, update []*Node) *Node {
@@ -122,6 +145,14 @@ func (it *Iterator) Key() string {
 
 func (it *Iterator) Value() []byte {
 	return it.current.value
+}
+
+func (it *Iterator) Deleted() bool {
+	return it.current.deleted
+}
+
+func (it *Iterator) Entry() Entry {
+	return Entry{Key: it.current.key, Value: it.current.value, Deleted: it.current.deleted}
 }
 
 func (it *Iterator) Advance() {

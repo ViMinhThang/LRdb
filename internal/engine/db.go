@@ -12,6 +12,12 @@ import (
 	"github.com/ViMinhThang/LRdb/internal/wal"
 )
 
+const (
+	defaultMemTableSizeLimit = 4 * 1024 * 1024
+	defaultSSTableBlockSize  = 4096
+	compactionThreshold      = 4
+)
+
 type DB struct {
 	memTable          *memtable.SkipList
 	immutableMemtable *memtable.SkipList
@@ -21,6 +27,7 @@ type DB struct {
 	sstables          []*sstable.SSTableReader
 	maxLevel          int
 	memTableSizeLimit int64
+	compactionRunning bool
 	mu                sync.RWMutex
 }
 
@@ -37,7 +44,11 @@ func OpenDB(walPath string, maxLevel int) (*DB, error) {
 			return nil, err
 		}
 		for _, rec := range records {
-			mem.Put(rec.Key, rec.Value)
+			if rec.Deleted {
+				mem.Delete(rec.Key)
+			} else {
+				mem.Put(rec.Key, rec.Value)
+			}
 		}
 	}
 
@@ -83,55 +94,92 @@ func OpenDB(walPath string, maxLevel int) (*DB, error) {
 		nextSSTableID:     nextSSTableID,
 		sstables:          sstables,
 		maxLevel:          maxLevel,
-		memTableSizeLimit: 4 * 1024 * 1024, // 4MB default limit
+		memTableSizeLimit: defaultMemTableSizeLimit,
 	}, nil
 }
 
-func (db *DB) Put(Key string, value []byte) error {
-	if err := db.wal.Write(Key, value); err != nil {
+func (db *DB) Put(key string, value []byte) error {
+	db.mu.Lock()
+	if err := db.wal.Write(key, value); err != nil {
+		db.mu.Unlock()
 		return err
 	}
 
-	db.mu.Lock()
-	db.memTable.Put(Key, value)
-
-	var triggerFlush bool
-	if db.memTable.Size() >= db.memTableSizeLimit && db.immutableMemtable == nil {
-		db.immutableMemtable = db.memTable
-		db.memTable = memtable.NewSkipList(db.maxLevel)
-		triggerFlush = true
-	}
+	db.memTable.Put(key, value)
+	triggerFlush := db.rotateMemtableIfNeededLocked()
 	db.mu.Unlock()
 
 	if triggerFlush {
-		go func() {
-			if err := db.Flush(); err != nil {
-				// Handle flush error (e.g. logging or panic in production)
-			}
-		}()
+		db.flushAsync()
 	}
 
 	return nil
 }
+
+func (db *DB) Delete(key string) error {
+	db.mu.Lock()
+	if err := db.wal.WriteDelete(key); err != nil {
+		db.mu.Unlock()
+		return err
+	}
+
+	db.memTable.Delete(key)
+	triggerFlush := db.rotateMemtableIfNeededLocked()
+	db.mu.Unlock()
+
+	if triggerFlush {
+		db.flushAsync()
+	}
+
+	return nil
+}
+
+func (db *DB) rotateMemtableIfNeededLocked() bool {
+	if db.memTable.Size() < db.memTableSizeLimit || db.immutableMemtable != nil {
+		return false
+	}
+
+	db.immutableMemtable = db.memTable
+	db.memTable = memtable.NewSkipList(db.maxLevel)
+	return true
+}
+
+func (db *DB) flushAsync() {
+	go func() {
+		if err := db.Flush(); err != nil {
+			// Handle flush error (e.g. logging or panic in production)
+		}
+	}()
+}
+
 func (db *DB) Get(key string) ([]byte, bool) {
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 	// 1. Search active memtable
-	if value, found := db.memTable.Get(key); found {
-		return value, true
+	if entry, found := db.memTable.GetEntry(key); found {
+		if entry.Deleted {
+			return nil, false
+		}
+		return entry.Value, true
 	}
 
 	// 2. Search immutable memtable
 	if db.immutableMemtable != nil {
-		if value, found := db.immutableMemtable.Get(key); found {
-			return value, true
+		if entry, found := db.immutableMemtable.GetEntry(key); found {
+			if entry.Deleted {
+				return nil, false
+			}
+			return entry.Value, true
 		}
 	}
 
 	// 3. Search SSTables on disk (newest to oldest)
 	for i := len(db.sstables) - 1; i >= 0; i-- {
-		if value, found, err := db.sstables[i].Get(key); err == nil && found {
-			return value, true
+		if entry, found, err := db.sstables[i].GetEntry(key); err == nil && found {
+			if entry.Deleted {
+				return nil, false
+			}
+			return entry.Value, true
 		}
 	}
 
@@ -143,6 +191,7 @@ func (db *DB) Flush() error {
 		db.mu.Unlock()
 		return nil
 	}
+	memToFlush := db.immutableMemtable
 
 	// Determine the new SSTable file name (e.g. 00001.sst)
 	sstPath := filepath.Join(filepath.Dir(db.walPath), fmt.Sprintf("%05d.sst", db.nextSSTableID))
@@ -150,14 +199,15 @@ func (db *DB) Flush() error {
 	db.mu.Unlock()
 
 	// Create a new SSTable builder
-	builder, err := sstable.NewSSTableBuilder(sstPath, 4096) // 4KB block size limit
+	builder, err := sstable.NewSSTableBuilder(sstPath, defaultSSTableBlockSize)
 	if err != nil {
 		return err
 	}
 
-	iter := db.immutableMemtable.NewIterator()
+	iter := memToFlush.NewIterator()
 	for iter.Next() {
-		if err := builder.Append(iter.Key(), iter.Value()); err != nil {
+		entry := iter.Entry()
+		if err := builder.AppendEntry(sstable.Entry{Key: entry.Key, Value: entry.Value, Deleted: entry.Deleted}); err != nil {
 			return err
 		}
 		iter.Advance()
@@ -175,10 +225,117 @@ func (db *DB) Flush() error {
 
 	db.mu.Lock()
 	db.sstables = append(db.sstables, reader)
-	db.immutableMemtable = nil // Flush complete, clear memory
+	if db.immutableMemtable == memToFlush {
+		db.immutableMemtable = nil // Flush complete, clear memory
+	}
 	db.mu.Unlock()
 
-	return nil
+	return db.maybeCompact()
+}
+
+func (db *DB) maybeCompact() error {
+	db.mu.Lock()
+	if len(db.sstables) < compactionThreshold || db.compactionRunning {
+		db.mu.Unlock()
+		return nil
+	}
+
+	readers := append([]*sstable.SSTableReader(nil), db.sstables...)
+	sstPath := filepath.Join(filepath.Dir(db.walPath), fmt.Sprintf("%05d.sst", db.nextSSTableID))
+	db.nextSSTableID++
+	db.compactionRunning = true
+	db.mu.Unlock()
+
+	defer func() {
+		db.mu.Lock()
+		db.compactionRunning = false
+		db.mu.Unlock()
+	}()
+
+	return db.compactSSTables(readers, sstPath)
+}
+
+func (db *DB) compactSSTables(readers []*sstable.SSTableReader, sstPath string) error {
+	latest := make(map[string]sstable.Entry)
+	for _, reader := range readers {
+		entries, err := reader.Entries()
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			value := entry.Value
+			if !entry.Deleted {
+				value = append([]byte(nil), entry.Value...)
+			}
+			latest[entry.Key] = sstable.Entry{Key: entry.Key, Value: value, Deleted: entry.Deleted}
+		}
+	}
+
+	var keys []string
+	for key, entry := range latest {
+		if !entry.Deleted {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+
+	var newReader *sstable.SSTableReader
+	if len(keys) > 0 {
+		reader, err := writeCompactedSSTable(sstPath, keys, latest)
+		if err != nil {
+			_ = os.Remove(sstPath)
+			return err
+		}
+		newReader = reader
+	}
+
+	compacted := make(map[*sstable.SSTableReader]struct{}, len(readers))
+	for _, reader := range readers {
+		compacted[reader] = struct{}{}
+	}
+
+	db.mu.Lock()
+	remaining := make([]*sstable.SSTableReader, 0, len(db.sstables))
+	for _, reader := range db.sstables {
+		if _, ok := compacted[reader]; !ok {
+			remaining = append(remaining, reader)
+		}
+	}
+
+	nextSSTables := make([]*sstable.SSTableReader, 0, len(remaining)+1)
+	if newReader != nil {
+		nextSSTables = append(nextSSTables, newReader)
+	}
+	nextSSTables = append(nextSSTables, remaining...)
+	db.sstables = nextSSTables
+	db.mu.Unlock()
+
+	var firstErr error
+	for _, reader := range readers {
+		if err := reader.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err := os.Remove(reader.Path()); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func writeCompactedSSTable(sstPath string, keys []string, entries map[string]sstable.Entry) (*sstable.SSTableReader, error) {
+	builder, err := sstable.NewSSTableBuilder(sstPath, defaultSSTableBlockSize)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range keys {
+		if err := builder.AppendEntry(entries[key]); err != nil {
+			return nil, err
+		}
+	}
+	if err := builder.Finish(); err != nil {
+		return nil, err
+	}
+	return sstable.OpenSSTableReader(sstPath)
 }
 
 func (db *DB) Close() error {
