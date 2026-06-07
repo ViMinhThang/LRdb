@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/ViMinhThang/LRdb/internal/memtable"
@@ -60,7 +61,14 @@ func OpenDB(walPath string, maxLevel int) (*DB, error) {
 	if err == nil {
 		var sstFiles []string
 		for _, file := range files {
-			if !file.IsDir() && filepath.Ext(file.Name()) == ".sst" {
+			if file.IsDir() {
+				continue
+			}
+			if strings.HasSuffix(file.Name(), ".sst.tmp") {
+				_ = os.Remove(filepath.Join(dbDir, file.Name()))
+				continue
+			}
+			if filepath.Ext(file.Name()) == ".sst" {
 				sstFiles = append(sstFiles, file.Name())
 			}
 		}
@@ -198,27 +206,15 @@ func (db *DB) Flush() error {
 	db.nextSSTableID++
 	db.mu.Unlock()
 
-	// Create a new SSTable builder
-	builder, err := sstable.NewSSTableBuilder(sstPath, defaultSSTableBlockSize)
-	if err != nil {
-		return err
-	}
-
+	var entries []sstable.Entry
 	iter := memToFlush.NewIterator()
 	for iter.Next() {
 		entry := iter.Entry()
-		if err := builder.AppendEntry(sstable.Entry{Key: entry.Key, Value: entry.Value, Deleted: entry.Deleted}); err != nil {
-			return err
-		}
+		entries = append(entries, sstable.Entry{Key: entry.Key, Value: entry.Value, Deleted: entry.Deleted})
 		iter.Advance()
 	}
 
-	if err := builder.Finish(); err != nil {
-		return err
-	}
-
-	// Open the new SSTable for reading
-	reader, err := sstable.OpenSSTableReader(sstPath)
+	reader, err := writeSSTableAtomically(sstPath, entries)
 	if err != nil {
 		return err
 	}
@@ -323,18 +319,50 @@ func (db *DB) compactSSTables(readers []*sstable.SSTableReader, sstPath string) 
 }
 
 func writeCompactedSSTable(sstPath string, keys []string, entries map[string]sstable.Entry) (*sstable.SSTableReader, error) {
-	builder, err := sstable.NewSSTableBuilder(sstPath, defaultSSTableBlockSize)
+	compactedEntries := make([]sstable.Entry, 0, len(keys))
+	for _, key := range keys {
+		compactedEntries = append(compactedEntries, entries[key])
+	}
+	return writeSSTableAtomically(sstPath, compactedEntries)
+}
+
+func writeSSTableAtomically(sstPath string, entries []sstable.Entry) (*sstable.SSTableReader, error) {
+	tmpPath := sstPath + ".tmp"
+	if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	builder, err := sstable.NewSSTableBuilder(tmpPath, defaultSSTableBlockSize)
 	if err != nil {
 		return nil, err
 	}
-	for _, key := range keys {
-		if err := builder.AppendEntry(entries[key]); err != nil {
+
+	builderClosed := false
+	cleanupTemp := true
+	defer func() {
+		if !builderClosed {
+			_ = builder.Close()
+		}
+		if cleanupTemp {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	for _, entry := range entries {
+		if err := builder.AppendEntry(entry); err != nil {
 			return nil, err
 		}
 	}
 	if err := builder.Finish(); err != nil {
 		return nil, err
 	}
+	builderClosed = true
+
+	if err := os.Rename(tmpPath, sstPath); err != nil {
+		return nil, err
+	}
+	cleanupTemp = false
+
 	return sstable.OpenSSTableReader(sstPath)
 }
 

@@ -246,3 +246,84 @@ func TestDB_ConcurrentWritesRecoverInMemoryState(t *testing.T) {
 		}
 	}
 }
+
+func TestDB_OpenDBIgnoresAndCleansTempSSTables(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "lrdb-engine-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tempPath := filepath.Join(tmpDir, "00099.sst.tmp")
+	if err := os.WriteFile(tempPath, []byte("unfinished temp table"), 0644); err != nil {
+		t.Fatalf("failed to write temp SSTable: %v", err)
+	}
+
+	db, err := OpenDB(filepath.Join(tmpDir, "test.wal"), 8)
+	if err != nil {
+		t.Fatalf("OpenDB should ignore temp SSTable: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
+		t.Fatalf("expected temp SSTable to be cleaned up, stat err=%v", err)
+	}
+	if len(db.sstables) != 0 {
+		t.Fatalf("expected no loaded SSTables, got %d", len(db.sstables))
+	}
+}
+
+func TestDB_TruncatedTempSSTableDoesNotPreventStartup(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "lrdb-engine-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tempPath := filepath.Join(tmpDir, "00001.sst.tmp")
+	if err := os.WriteFile(tempPath, []byte{0x01, 0x02, 0x03}, 0644); err != nil {
+		t.Fatalf("failed to write truncated temp SSTable: %v", err)
+	}
+
+	db, err := OpenDB(filepath.Join(tmpDir, "test.wal"), 8)
+	if err != nil {
+		t.Fatalf("OpenDB should ignore truncated temp SSTable: %v", err)
+	}
+	defer db.Close()
+}
+
+func TestDB_SSTableWritesDoNotLeaveTempFiles(t *testing.T) {
+	db, tmpDir, _ := openTestDB(t)
+
+	if err := db.Put("flush-key", []byte("flush-value")); err != nil {
+		t.Fatalf("failed to put flush key: %v", err)
+	}
+	flushActive(t, db)
+	assertNoTempSSTables(t, tmpDir)
+
+	for i := 0; i < compactionThreshold-1; i++ {
+		key := fmt.Sprintf("compact-key-%02d", i)
+		if err := db.Put(key, []byte("value")); err != nil {
+			t.Fatalf("failed to put compact key: %v", err)
+		}
+		flushActive(t, db)
+		assertNoTempSSTables(t, tmpDir)
+	}
+
+	if len(db.sstables) != 1 {
+		t.Fatalf("expected compaction to leave 1 SSTable, got %d", len(db.sstables))
+	}
+	assertNoTempSSTables(t, tmpDir)
+}
+
+func assertNoTempSSTables(t *testing.T, dir string) {
+	t.Helper()
+
+	tempFiles, err := filepath.Glob(filepath.Join(dir, "*.sst.tmp"))
+	if err != nil {
+		t.Fatalf("failed to glob temp SSTables: %v", err)
+	}
+	if len(tempFiles) != 0 {
+		t.Fatalf("expected no temp SSTables, got %v", tempFiles)
+	}
+}

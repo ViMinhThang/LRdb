@@ -128,5 +128,14 @@ func (b *SSTableBuilder) Finish() error {
 	if _, err := b.file.Write(footer); err != nil {
 		return err
 	}
+	syncErr := b.file.Sync()
+	closeErr := b.file.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func (b *SSTableBuilder) Close() error {
 	return b.file.Close()
 }
