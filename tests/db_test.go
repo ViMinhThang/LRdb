@@ -1,4 +1,4 @@
-package engine
+package tests
 
 import (
 	"bytes"
@@ -8,10 +8,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/ViMinhThang/LRdb/internal/engine"
 	"github.com/ViMinhThang/LRdb/internal/memtable"
 )
 
-func openTestDB(t *testing.T) (*DB, string, string) {
+func openTestDB(t *testing.T) (*engine.DB, string, string) {
 	t.Helper()
 
 	tmpDir, err := os.MkdirTemp("", "lrdb-engine-test-*")
@@ -23,7 +24,7 @@ func openTestDB(t *testing.T) (*DB, string, string) {
 	})
 
 	walPath := filepath.Join(tmpDir, "test.wal")
-	db, err := OpenDB(walPath, 8)
+	db, err := engine.OpenDB(walPath, 8)
 	if err != nil {
 		t.Fatalf("failed to open db: %v", err)
 	}
@@ -34,21 +35,21 @@ func openTestDB(t *testing.T) (*DB, string, string) {
 	return db, tmpDir, walPath
 }
 
-func flushActive(t *testing.T, db *DB) {
+func flushActive(t *testing.T, db *engine.DB) {
 	t.Helper()
 
-	db.mu.Lock()
-	if db.immutableMemtable != nil {
-		db.mu.Unlock()
+	db.Lock()
+	if db.GetImmutableMemTable() != nil {
+		db.Unlock()
 		t.Fatal("immutable memtable is already pending flush")
 	}
-	if db.memTable.Size() == 0 {
-		db.mu.Unlock()
+	if db.GetMemTable().Size() == 0 {
+		db.Unlock()
 		t.Fatal("active memtable is empty")
 	}
-	db.immutableMemtable = db.memTable
-	db.memTable = memtable.NewSkipList(db.maxLevel)
-	db.mu.Unlock()
+	db.SetImmutableMemTable(db.GetMemTable())
+	db.SetMemTable(memtable.NewSkipList(db.GetMaxLevel()))
+	db.Unlock()
 
 	if err := db.Flush(); err != nil {
 		t.Fatalf("failed to flush active memtable: %v", err)
@@ -99,8 +100,8 @@ func TestDB_CompactionKeepsNewestValueAndCleansOldFiles(t *testing.T) {
 	}
 	flushActive(t, db)
 
-	if len(db.sstables) != 1 {
-		t.Fatalf("expected compaction to leave 1 SSTable, got %d", len(db.sstables))
+	if len(db.GetSSTables()) != 1 {
+		t.Fatalf("expected compaction to leave 1 SSTable, got %d", len(db.GetSSTables()))
 	}
 
 	value, found := db.Get("key")
@@ -140,14 +141,14 @@ func TestDB_CompactionDropsTombstonesAndRestartKeepsDelete(t *testing.T) {
 	}
 	flushActive(t, db)
 
-	if len(db.sstables) != 1 {
-		t.Fatalf("expected compaction to leave 1 SSTable, got %d", len(db.sstables))
+	if len(db.GetSSTables()) != 1 {
+		t.Fatalf("expected compaction to leave 1 SSTable, got %d", len(db.GetSSTables()))
 	}
 	if val, found := db.Get("gone"); found || val != nil {
 		t.Fatalf("expected deleted key to stay hidden after compaction, got value=%q found=%v", val, found)
 	}
 
-	entries, err := db.sstables[0].Entries()
+	entries, err := db.GetSSTables()[0].Entries()
 	if err != nil {
 		t.Fatalf("failed to scan compacted SSTable: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestDB_CompactionDropsTombstonesAndRestartKeepsDelete(t *testing.T) {
 		t.Fatalf("failed to close db: %v", err)
 	}
 
-	reopened, err := OpenDB(walPath, 8)
+	reopened, err := engine.OpenDB(walPath, 8)
 	if err != nil {
 		t.Fatalf("failed to reopen db: %v", err)
 	}
@@ -227,7 +228,7 @@ func TestDB_ConcurrentWritesRecoverInMemoryState(t *testing.T) {
 		t.Fatalf("failed to close db: %v", err)
 	}
 
-	reopened, err := OpenDB(walPath, 8)
+	reopened, err := engine.OpenDB(walPath, 8)
 	if err != nil {
 		t.Fatalf("failed to reopen db: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestDB_OpenDBIgnoresAndCleansTempSSTables(t *testing.T) {
 		t.Fatalf("failed to write temp SSTable: %v", err)
 	}
 
-	db, err := OpenDB(filepath.Join(tmpDir, "test.wal"), 8)
+	db, err := engine.OpenDB(filepath.Join(tmpDir, "test.wal"), 8)
 	if err != nil {
 		t.Fatalf("OpenDB should ignore temp SSTable: %v", err)
 	}
@@ -268,8 +269,8 @@ func TestDB_OpenDBIgnoresAndCleansTempSSTables(t *testing.T) {
 	if _, err := os.Stat(tempPath); !os.IsNotExist(err) {
 		t.Fatalf("expected temp SSTable to be cleaned up, stat err=%v", err)
 	}
-	if len(db.sstables) != 0 {
-		t.Fatalf("expected no loaded SSTables, got %d", len(db.sstables))
+	if len(db.GetSSTables()) != 0 {
+		t.Fatalf("expected no loaded SSTables, got %d", len(db.GetSSTables()))
 	}
 }
 
@@ -285,7 +286,7 @@ func TestDB_TruncatedTempSSTableDoesNotPreventStartup(t *testing.T) {
 		t.Fatalf("failed to write truncated temp SSTable: %v", err)
 	}
 
-	db, err := OpenDB(filepath.Join(tmpDir, "test.wal"), 8)
+	db, err := engine.OpenDB(filepath.Join(tmpDir, "test.wal"), 8)
 	if err != nil {
 		t.Fatalf("OpenDB should ignore truncated temp SSTable: %v", err)
 	}
@@ -301,7 +302,8 @@ func TestDB_SSTableWritesDoNotLeaveTempFiles(t *testing.T) {
 	flushActive(t, db)
 	assertNoTempSSTables(t, tmpDir)
 
-	for i := 0; i < compactionThreshold-1; i++ {
+	// Since compactionThreshold is 4
+	for i := 0; i < 3; i++ {
 		key := fmt.Sprintf("compact-key-%02d", i)
 		if err := db.Put(key, []byte("value")); err != nil {
 			t.Fatalf("failed to put compact key: %v", err)
@@ -310,8 +312,8 @@ func TestDB_SSTableWritesDoNotLeaveTempFiles(t *testing.T) {
 		assertNoTempSSTables(t, tmpDir)
 	}
 
-	if len(db.sstables) != 1 {
-		t.Fatalf("expected compaction to leave 1 SSTable, got %d", len(db.sstables))
+	if len(db.GetSSTables()) != 1 {
+		t.Fatalf("expected compaction to leave 1 SSTable, got %d", len(db.GetSSTables()))
 	}
 	assertNoTempSSTables(t, tmpDir)
 }

@@ -13,7 +13,7 @@ type WAL struct {
 	file *os.File
 }
 
-const maxRecordsSize = 64 * 1024 * 1024 // 64MB is the limit
+const maxRecordsSize = 64 * 1024 * 1024
 const tombstoneMask uint32 = 1 << 31
 
 type Record struct {
@@ -67,7 +67,6 @@ func (w *WAL) writeRecord(key string, value []byte, deleted bool) error {
 		return err
 	}
 
-	// 7. Ép phần cứng (SSD/HDD) phải ghi dữ liệu từ OS cache xuống đĩa ngay lập tức
 	return w.file.Sync()
 }
 

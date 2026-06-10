@@ -70,8 +70,7 @@ func (sl *SkipList) putEntry(key string, value []byte, deleted bool) {
 	}
 
 	newLevel := sl.randomLevel()
-	// nếu là level cao hơn hiện tại
-	// bắt đầu từ tầng cao nhất hiện tại
+
 	if newLevel > sl.level {
 		for i := sl.level; i < newLevel; i++ {
 			update[i] = sl.head

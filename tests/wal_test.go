@@ -1,10 +1,12 @@
-package wal
+package tests
 
 import (
 	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ViMinhThang/LRdb/internal/wal"
 )
 
 func TestWAL_WriteAndRead(t *testing.T) {
@@ -17,12 +19,12 @@ func TestWAL_WriteAndRead(t *testing.T) {
 	walPath := filepath.Join(tempDir, "test.wal")
 
 	// 1. Create WAL and write records
-	w, err := NewWAL(walPath)
+	w, err := wal.NewWAL(walPath)
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
 
-	recordsToWrite := []Record{
+	recordsToWrite := []wal.Record{
 		{Key: "key-1", Value: []byte("value-1")},
 		{Key: "key-2", Value: []byte("value-2")},
 		{Key: "key-3", Value: []byte("")},   // empty value
@@ -40,13 +42,13 @@ func TestWAL_WriteAndRead(t *testing.T) {
 	}
 
 	// 2. Open for read and verify records
-	file, err := OpenWALForRead(walPath)
+	file, err := wal.OpenWALForRead(walPath)
 	if err != nil {
 		t.Fatalf("Failed to open WAL for read: %v", err)
 	}
 	defer file.Close()
 
-	readRecords, err := ReadRecords(file)
+	readRecords, err := wal.ReadRecords(file)
 	if err != nil {
 		t.Fatalf("Failed to read WAL records: %v", err)
 	}
@@ -75,7 +77,7 @@ func TestWAL_AppendAndRead(t *testing.T) {
 	walPath := filepath.Join(tempDir, "test.wal")
 
 	// Write first record
-	w1, err := NewWAL(walPath)
+	w1, err := wal.NewWAL(walPath)
 	if err != nil {
 		t.Fatalf("Failed to create WAL 1: %v", err)
 	}
@@ -85,7 +87,7 @@ func TestWAL_AppendAndRead(t *testing.T) {
 	w1.Close()
 
 	// Append second record
-	w2, err := NewWAL(walPath)
+	w2, err := wal.NewWAL(walPath)
 	if err != nil {
 		t.Fatalf("Failed to create WAL 2: %v", err)
 	}
@@ -95,13 +97,13 @@ func TestWAL_AppendAndRead(t *testing.T) {
 	w2.Close()
 
 	// Read and verify both
-	file, err := OpenWALForRead(walPath)
+	file, err := wal.OpenWALForRead(walPath)
 	if err != nil {
 		t.Fatalf("Failed to open WAL for read: %v", err)
 	}
 	defer file.Close()
 
-	records, err := ReadRecords(file)
+	records, err := wal.ReadRecords(file)
 	if err != nil {
 		t.Fatalf("Failed to read WAL: %v", err)
 	}
@@ -126,7 +128,7 @@ func TestWAL_TombstoneAndEmptyValue(t *testing.T) {
 
 	walPath := filepath.Join(tempDir, "test.wal")
 
-	w, err := NewWAL(walPath)
+	w, err := wal.NewWAL(walPath)
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -143,13 +145,13 @@ func TestWAL_TombstoneAndEmptyValue(t *testing.T) {
 		t.Fatalf("Failed to close WAL: %v", err)
 	}
 
-	file, err := OpenWALForRead(walPath)
+	file, err := wal.OpenWALForRead(walPath)
 	if err != nil {
 		t.Fatalf("Failed to open WAL for read: %v", err)
 	}
 	defer file.Close()
 
-	records, err := ReadRecords(file)
+	records, err := wal.ReadRecords(file)
 	if err != nil {
 		t.Fatalf("Failed to read WAL records: %v", err)
 	}
@@ -183,13 +185,13 @@ func TestWAL_EmptyWAL(t *testing.T) {
 	}
 	f.Close()
 
-	file, err := OpenWALForRead(walPath)
+	file, err := wal.OpenWALForRead(walPath)
 	if err != nil {
 		t.Fatalf("Failed to open WAL for read: %v", err)
 	}
 	defer file.Close()
 
-	records, err := ReadRecords(file)
+	records, err := wal.ReadRecords(file)
 	if err != nil {
 		t.Fatalf("Failed to read empty WAL: %v", err)
 	}
@@ -209,7 +211,7 @@ func TestWAL_CorruptionAndTruncation(t *testing.T) {
 	walPath := filepath.Join(tempDir, "corrupted.wal")
 
 	// Write three records
-	w, err := NewWAL(walPath)
+	w, err := wal.NewWAL(walPath)
 	if err != nil {
 		t.Fatalf("Failed to create WAL: %v", err)
 	}
@@ -239,13 +241,13 @@ func TestWAL_CorruptionAndTruncation(t *testing.T) {
 	}
 
 	// Verify that the corrupted record returns an error, but successfully returns the first healthy record
-	file, err := OpenWALForRead(corruptedPath)
+	file, err := wal.OpenWALForRead(corruptedPath)
 	if err != nil {
 		t.Fatalf("Failed to open bad WAL: %v", err)
 	}
 	defer file.Close()
 
-	records, err := ReadRecords(file)
+	records, err := wal.ReadRecords(file)
 	if err == nil {
 		t.Fatalf("Expected corruption error, but got nil error")
 	}
@@ -265,13 +267,13 @@ func TestWAL_CorruptionAndTruncation(t *testing.T) {
 		t.Fatalf("Failed to write truncated WAL: %v", err)
 	}
 
-	fileTrunc, err := OpenWALForRead(truncatedPath)
+	fileTrunc, err := wal.OpenWALForRead(truncatedPath)
 	if err != nil {
 		t.Fatalf("Failed to open truncated WAL: %v", err)
 	}
 	defer fileTrunc.Close()
 
-	recordsTrunc, err := ReadRecords(fileTrunc)
+	recordsTrunc, err := wal.ReadRecords(fileTrunc)
 	if err != nil {
 		t.Fatalf("Failed to parse truncated WAL: %v", err)
 	}

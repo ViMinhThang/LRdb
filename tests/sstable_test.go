@@ -1,10 +1,12 @@
-package sstable
+package tests
 
 import (
 	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ViMinhThang/LRdb/internal/sstable"
 )
 
 func TestSSTable(t *testing.T) {
@@ -17,7 +19,7 @@ func TestSSTable(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "test.sst")
 
 	// 1. Create SSTable with small block size (50 bytes) to force multiple blocks
-	builder, err := NewSSTableBuilder(filePath, 50)
+	builder, err := sstable.NewSSTableBuilder(filePath, 50)
 	if err != nil {
 		t.Fatalf("failed to create builder: %v", err)
 	}
@@ -45,7 +47,7 @@ func TestSSTable(t *testing.T) {
 	}
 
 	// 2. Read the SSTable using SSTableReader
-	reader, err := OpenSSTableReader(filePath)
+	reader, err := sstable.OpenSSTableReader(filePath)
 	if err != nil {
 		t.Fatalf("failed to open reader: %v", err)
 	}
@@ -92,7 +94,7 @@ func TestSSTable_TombstonesAndEntries(t *testing.T) {
 
 	filePath := filepath.Join(tmpDir, "test.sst")
 
-	builder, err := NewSSTableBuilder(filePath, 50)
+	builder, err := sstable.NewSSTableBuilder(filePath, 50)
 	if err != nil {
 		t.Fatalf("failed to create builder: %v", err)
 	}
@@ -110,7 +112,7 @@ func TestSSTable_TombstonesAndEntries(t *testing.T) {
 		t.Fatalf("failed to finish builder: %v", err)
 	}
 
-	reader, err := OpenSSTableReader(filePath)
+	reader, err := sstable.OpenSSTableReader(filePath)
 	if err != nil {
 		t.Fatalf("failed to open reader: %v", err)
 	}

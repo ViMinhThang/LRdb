@@ -1,13 +1,15 @@
-package memtable
+package tests
 
 import (
 	"bytes"
 	"fmt"
 	"testing"
+
+	"github.com/ViMinhThang/LRdb/internal/memtable"
 )
 
 func TestSkipList_BasicPutGet(t *testing.T) {
-	sl := NewSkipList(8)
+	sl := memtable.NewSkipList(8)
 
 	// Test Get on empty list
 	val, ok := sl.Get("key1")
@@ -24,13 +26,13 @@ func TestSkipList_BasicPutGet(t *testing.T) {
 
 	// Test size calculation
 	expectedSize := int64(len("key1") + len("value1"))
-	if sl.size != expectedSize {
-		t.Errorf("Expected size to be %d, got %d", expectedSize, sl.size)
+	if sl.Size() != expectedSize {
+		t.Errorf("Expected size to be %d, got %d", expectedSize, sl.Size())
 	}
 }
 
 func TestSkipList_PutDuplicateUpdate(t *testing.T) {
-	sl := NewSkipList(8)
+	sl := memtable.NewSkipList(8)
 
 	sl.Put("key1", []byte("value1"))
 	sl.Put("key1", []byte("value2"))
@@ -42,13 +44,13 @@ func TestSkipList_PutDuplicateUpdate(t *testing.T) {
 
 	// Size should be: original key len + updated value len
 	expectedSize := int64(len("key1") + len("value2"))
-	if sl.size != expectedSize {
-		t.Errorf("Expected size to be %d, got %d", expectedSize, sl.size)
+	if sl.Size() != expectedSize {
+		t.Errorf("Expected size to be %d, got %d", expectedSize, sl.Size())
 	}
 }
 
 func TestSkipList_DeleteTombstone(t *testing.T) {
-	sl := NewSkipList(8)
+	sl := memtable.NewSkipList(8)
 
 	sl.Put("key1", []byte("value1"))
 	sl.Delete("key1")
@@ -67,7 +69,7 @@ func TestSkipList_DeleteTombstone(t *testing.T) {
 }
 
 func TestSkipList_Ordering(t *testing.T) {
-	sl := NewSkipList(8)
+	sl := memtable.NewSkipList(8)
 
 	keys := []string{"zebra", "apple", "monkey", "banana", "cat"}
 	for _, k := range keys {
@@ -84,10 +86,10 @@ func TestSkipList_Ordering(t *testing.T) {
 
 	// Traverse the lowest level (level 0) which must contain all keys in sorted order
 	var traversedKeys []string
-	curr := sl.head.forward[0]
-	for curr != nil {
-		traversedKeys = append(traversedKeys, curr.key)
-		curr = curr.forward[0]
+	iter := sl.NewIterator()
+	for iter.Next() {
+		traversedKeys = append(traversedKeys, iter.Key())
+		iter.Advance()
 	}
 
 	expectedOrder := []string{"apple", "banana", "cat", "monkey", "zebra"}
@@ -103,7 +105,7 @@ func TestSkipList_Ordering(t *testing.T) {
 }
 
 func TestSkipList_MassInsertions(t *testing.T) {
-	sl := NewSkipList(16)
+	sl := memtable.NewSkipList(16)
 	count := 1000
 
 	for i := 0; i < count; i++ {
